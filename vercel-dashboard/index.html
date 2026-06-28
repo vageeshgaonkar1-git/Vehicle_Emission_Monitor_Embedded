@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Vehicle Emissions Monitor</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
+  <!-- Firebase SDK -->
+  <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-database-compat.js"></script>
+  <style>
+    @keyframes flash-border {
+      0%, 100% { border-color: rgb(239 68 68 / 0.8); box-shadow: 0 0 0 0 rgb(239 68 68 / 0); }
+      50%       { border-color: rgb(239 68 68 / 1);   box-shadow: 0 0 12px 3px rgb(239 68 68 / 0.5); }
+    }
+    .alert-flash { animation: flash-border 1s ease-in-out infinite; }
+    .log-scroll::-webkit-scrollbar       { width: 6px; }
+    .log-scroll::-webkit-scrollbar-track { background: #18181b; }
+    .log-scroll::-webkit-scrollbar-thumb { background: #52525b; border-radius: 3px; }
+    .tab-btn.active { background: #0f766e; color: #f0fdfa; }
+    .tab-btn        { transition: background 0.15s, color 0.15s; }
+    input[type=range] { accent-color: #0d9488; }
+  </style>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen font-sans antialiased">
+
+<!-- HEADER -->
+<header class="bg-zinc-900 border-b border-zinc-700/60 px-6 py-3 sticky top-0 z-50 shadow-xl">
+  <div class="max-w-screen-xl mx-auto flex flex-wrap items-center justify-between gap-3">
+    <div class="flex items-center gap-3">
+      <span class="text-2xl">💨</span>
+      <div>
+        <h1 class="text-lg font-bold tracking-wide text-teal-400 leading-none">Vehicle Emissions Monitor</h1>
+        <p class="text-xs text-slate-500 mt-0.5">Live Firebase Dashboard</p>
+      </div>
+    </div>
+    <div class="flex items-center gap-3 flex-wrap">
+      <span id="badge-firebase"
+            class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold
+                   bg-red-500/15 text-red-400 border border-red-500/30 transition-all duration-500">
+        <span class="w-2 h-2 rounded-full bg-red-500 inline-block"></span> Firebase: Connecting
+      </span>
+      <span id="badge-engine"
+            class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold
+                   bg-red-500/15 text-red-400 border border-red-500/30 transition-all duration-500">
+        <span class="w-2 h-2 rounded-full bg-red-500 inline-block"></span> Engine: Stopped
+      </span>
+      <span id="header-ts" class="text-xs text-slate-500">Awaiting data…</span>
+    </div>
+  </div>
+</header>
+<!-- TAB BAR -->
+<nav class="bg-zinc-900/80 border-b border-zinc-700/40 px-6 sticky top-[61px] z-40">
+  <div class="max-w-screen-xl mx-auto flex gap-1 py-2">
+    <button class="tab-btn active px-5 py-2 rounded-lg text-sm font-medium text-slate-300" onclick="showTab('live',this)">📡 Live</button>
+    <button class="tab-btn px-5 py-2 rounded-lg text-sm font-medium text-slate-300" onclick="showTab('history',this)">🗂 History</button>
+    <button class="tab-btn px-5 py-2 rounded-lg text-sm font-medium text-slate-300" onclick="showTab('settings',this)">⚙️ Settings</button>
+  </div>
+</nav>
+
+<main class="max-w-screen-xl mx-auto px-4 py-6 space-y-6">
+  <!-- ALERTS -->
+  <div id="alert-co" class="hidden items-center gap-3 bg-red-900/40 border-2 border-red-500/60 rounded-xl px-5 py-3 alert-flash">
+    <span class="text-2xl">🚨</span>
+    <div><p class="font-bold text-red-400">CO HAZARD</p><p id="alert-co-msg" class="text-sm text-red-300"></p></div>
+  </div>
+  <div id="alert-nox" class="hidden items-center gap-3 bg-orange-900/40 border-2 border-orange-500/60 rounded-xl px-5 py-3 alert-flash">
+    <span class="text-2xl">⚠️</span>
+    <div><p class="font-bold text-orange-400">NOx HAZARD</p><p id="alert-nox-msg" class="text-sm text-orange-300"></p></div>
+  </div>
+  <!-- LIVE TAB -->
+  <section id="tab-live" class="space-y-6">
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div id="card-co" class="bg-zinc-800 rounded-2xl border border-zinc-700 p-5">
+        <p class="text-xs text-slate-400 font-medium uppercase tracking-wider">Carbon Monoxide</p>
+        <p id="co-val" class="text-3xl font-bold text-blue-400 mt-2">—</p>
+        <p class="text-xs text-slate-500 mt-1">ppm</p>
+      </div>
+      <div id="card-nox" class="bg-zinc-800 rounded-2xl border border-zinc-700 p-5">
+        <p class="text-xs text-slate-400 font-medium uppercase tracking-wider">Nitrogen Oxides</p>
+        <p id="nox-val" class="text-3xl font-bold text-purple-400 mt-2">—</p>
+        <p class="text-xs text-slate-500 mt-1">ppm</p>
+      </div>
+      <div class="bg-zinc-800 rounded-2xl border border-zinc-700 p-5">
+        <p class="text-xs text-slate-400 font-medium uppercase tracking-wider">Temperature</p>
+        <p id="temp-val" class="text-3xl font-bold text-amber-400 mt-2">—</p>
+        <p class="text-xs text-slate-500 mt-1">°C</p>
+      </div>
+      <div class="bg-zinc-800 rounded-2xl border border-zinc-700 p-5">
+        <p class="text-xs text-slate-400 font-medium uppercase tracking-wider">Humidity</p>
+        <p id="hum-val" class="text-3xl font-bold text-cyan-400 mt-2">—</p>
+        <p class="text-xs text-slate-500 mt-1">% RH</p>
+      </div>
+    </div>
+    <div class="bg-zinc-800 rounded-2xl border border-zinc-700 p-6">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="font-semibold text-slate-200">Gas Concentration — CO &amp; NOx</h2>
+        <span class="text-xs text-slate-500">rolling 50 pts · ppm</span>
+      </div>
+      <div class="h-72"><canvas id="gasChart"></canvas></div>
+    </div>
+    <div class="bg-zinc-800 rounded-2xl border border-zinc-700 p-6">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="font-semibold text-slate-200">Environmental — Temperature &amp; Humidity</h2>
+        <span class="text-xs text-slate-500">rolling 50 pts</span>
+      </div>
+      <div class="h-72"><canvas id="envChart"></canvas></div>
+    </div>
+    <div class="flex justify-end">
+      <button onclick="exportCSV()" class="flex items-center gap-2 bg-teal-700 hover:bg-teal-600 text-white text-sm font-medium px-5 py-2.5 rounded-xl transition-colors">⬇ Export CSV</button>
+    </div>
+    <div class="bg-zinc-800 rounded-2xl border border-zinc-700 p-5">
+      <div class="flex items-center justify-between mb-3">
+        <h2 class="font-semibold text-slate-200">🔔 Recent Alarms</h2>
+        <button onclick="clearAlarmLog()" class="text-xs text-slate-500 hover:text-slate-300">Clear</button>
+      </div>
+      <div id="alarm-log" class="log-scroll h-40 overflow-y-auto space-y-1 font-mono text-xs text-slate-400 bg-zinc-900/60 rounded-lg p-3">
+        <p class="text-slate-600 italic">No alarms recorded yet.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- HISTORY TAB -->
+  <section id="tab-history" class="hidden space-y-6">
+    <div class="bg-zinc-800 rounded-2xl border border-zinc-700 p-6">
+      <div class="flex flex-wrap items-center justify-between gap-4 mb-5">
+        <h2 class="font-semibold text-slate-200">Emission Log — Firebase Records</h2>
+        <button onclick="loadHistory()" class="bg-teal-700 hover:bg-teal-600 text-white text-sm font-medium px-4 py-1.5 rounded-lg">Refresh</button>
+      </div>
+      <div class="overflow-x-auto rounded-xl">
+        <table class="w-full text-xs text-slate-300 border-collapse">
+          <thead>
+            <tr class="bg-zinc-700/60 text-slate-400 uppercase tracking-wider">
+              <th class="px-3 py-2.5 text-left">#</th>
+              <th class="px-3 py-2.5 text-left">Timestamp</th>
+              <th class="px-3 py-2.5 text-right">CO</th>
+              <th class="px-3 py-2.5 text-right">NOx</th>
+              <th class="px-3 py-2.5 text-right">Temp</th>
+              <th class="px-3 py-2.5 text-right">Hum</th>
+              <th class="px-3 py-2.5 text-center">Engine</th>
+            </tr>
+          </thead>
+          <tbody id="hist-tbody">
+            <tr><td colspan="7" class="px-3 py-6 text-center text-slate-600 italic">Click "Refresh" to load</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+  <!-- SETTINGS TAB -->
+  <section id="tab-settings" class="hidden space-y-6">
+    <div class="bg-zinc-800 rounded-2xl border border-zinc-700 p-6 max-w-xl">
+      <h2 class="font-semibold text-slate-200 mb-6">Alert Thresholds</h2>
+      <div class="mb-6">
+        <div class="flex justify-between items-center mb-2">
+          <label class="text-sm font-medium text-blue-400">CO Threshold</label>
+          <span class="text-sm font-bold text-blue-300"><span id="co-thresh-display">50</span> ppm</span>
+        </div>
+        <input type="range" id="co-thresh-slider" min="1" max="500" step="1" value="50" class="w-full h-2 rounded-lg cursor-pointer"
+               oninput="document.getElementById('co-thresh-display').textContent=this.value" />
+      </div>
+      <div class="mb-8">
+        <div class="flex justify-between items-center mb-2">
+          <label class="text-sm font-medium text-purple-400">NOx Threshold</label>
+          <span class="text-sm font-bold text-purple-300"><span id="nox-thresh-display">25</span> ppm</span>
+        </div>
+        <input type="range" id="nox-thresh-slider" min="1" max="200" step="1" value="25" class="w-full h-2 rounded-lg cursor-pointer"
+               oninput="document.getElementById('nox-thresh-display').textContent=this.value" />
+      </div>
+      <button onclick="applyThresholds()" class="w-full bg-teal-700 hover:bg-teal-600 text-white font-semibold py-2.5 rounded-xl transition-colors">Apply</button>
+      <p id="thresh-saved-msg" class="text-xs text-teal-400 text-center mt-2 hidden">✓ Applied</p>
+    </div>
+  </section>
+</main>
+
+<script>
+'use strict';
+// ── Firebase config ───────────────────────────────────────────────────────────
+const firebaseConfig = {
+  apiKey:            "AIzaSyA3nP0sYeqeiCY6BDdI-Ha_AKs4gkxFxzk",
+  authDomain:        "vehicle-emission-monitor-12345.firebaseapp.com",
+  databaseURL:       "https://vehicle-emission-monitor-12345-default-rtdb.firebaseio.com",
+  projectId:         "vehicle-emission-monitor-12345",
+  storageBucket:     "vehicle-emission-monitor-12345.firebasestorage.app",
+  messagingSenderId: "189383104582",
+  appId:             "1:189383104582:web:9f257c2d87b85910ebd247"
+};
+firebase.initializeApp(firebaseConfig);
+const db = firebase.database();
+// ── State ─────────────────────────────────────────────────────────────────────
+const MAX_PTS     = 50;
+const sessionData = [];
+let alarmLogData  = [];
+let recordCount   = 0;
+let thresholds    = { co: 50, nox: 25 };
+let alertActive   = { co: false, nox: false };
+// ── Tabs ──────────────────────────────────────────────────────────────────────
+function showTab(name, btn) {
+  ['live','history','settings'].forEach(t => {
+    document.getElementById('tab-'+t).classList.toggle('hidden', t !== name);
+  });
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  if (name === 'history') loadHistory();
+}
+// ── Charts ────────────────────────────────────────────────────────────────────
+const CHART_DEFAULTS = {
+  responsive: true, maintainAspectRatio: false, animation: { duration: 250 },
+  scales: {
+    x: { grid: { color: 'rgba(63,63,70,0.6)' }, ticks: { color:'#71717a', maxTicksLimit:8, font:{size:10} } },
+    y: { min:0, grid: { color:'rgba(63,63,70,0.6)' }, ticks: { color:'#71717a', font:{size:10} } }
+  },
+  plugins: { legend: { labels: { color:'#e4e4e7', font:{size:11} } } }
+};
+const gasChart = new Chart(document.getElementById('gasChart').getContext('2d'), {
+  type:'line', data:{ labels:[],
+    datasets:[
+      { label:'CO (ppm)',  data:[], borderColor:'#60a5fa', backgroundColor:'rgba(96,165,250,0.08)', tension:0.3, fill:true, pointRadius:2 },
+      { label:'NOx (ppm)', data:[], borderColor:'#c084fc', backgroundColor:'rgba(192,132,252,0.08)', tension:0.3, fill:true, pointRadius:2 }
+    ]
+  }, options:{ ...CHART_DEFAULTS }
+});
+const envChart = new Chart(document.getElementById('envChart').getContext('2d'), {
+  type:'line', data:{ labels:[],
+    datasets:[
+      { label:'Temp (°C)', data:[], borderColor:'#fbbf24', backgroundColor:'rgba(251,191,36,0.08)', tension:0.3, fill:true, pointRadius:2, yAxisID:'yTemp' },
+      { label:'Humidity (%)', data:[], borderColor:'#22d3ee', backgroundColor:'rgba(34,211,238,0.08)', tension:0.3, fill:true, pointRadius:2, yAxisID:'yHum' }
+    ]
+  }, options:{ ...CHART_DEFAULTS,
+    scales:{ x:CHART_DEFAULTS.scales.x,
+      yTemp:{ min:0, position:'left',  grid:{color:'rgba(63,63,70,0.6)'}, ticks:{color:'#fbbf24',font:{size:10}} },
+      yHum: { min:0, max:100, position:'right', grid:{drawOnChartArea:false}, ticks:{color:'#22d3ee',font:{size:10}} }
+    }
+  }
+});
+function pushToChart(chart, label, values) {
+  chart.data.labels.push(label);
+  values.forEach((v,i) => chart.data.datasets[i].data.push(v));
+  if (chart.data.labels.length > MAX_PTS) {
+    chart.data.labels.shift();
+    chart.data.datasets.forEach(ds => ds.data.shift());
+  }
+  chart.update('none');
+}
+
+// ── Badge helper ──────────────────────────────────────────────────────────────
+function setBadge(id, online, labelOn, labelOff) {
+  const el = document.getElementById(id);
+  if (online) {
+    el.className = el.className.replace(/bg-red-500\/15/g,'bg-emerald-500/15').replace(/text-red-400/g,'text-emerald-400').replace(/border-red-500\/30/g,'border-emerald-500/30');
+    el.innerHTML = `<span class="w-2 h-2 rounded-full bg-emerald-500 inline-block"></span> ${labelOn}`;
+  } else {
+    el.className = el.className.replace(/bg-emerald-500\/15/g,'bg-red-500/15').replace(/text-emerald-400/g,'text-red-400').replace(/border-emerald-500\/30/g,'border-red-500/30');
+    el.innerHTML = `<span class="w-2 h-2 rounded-full bg-red-500 inline-block"></span> ${labelOff}`;
+  }
+}
+// ── Alerts ────────────────────────────────────────────────────────────────────
+function evaluateAlerts(data) {
+  const coTrip  = data.co  > thresholds.co  && data.is_running === 1;
+  const noxTrip = data.nox > thresholds.nox && data.is_running === 1;
+  const coEl  = document.getElementById('alert-co');
+  if (coTrip) {
+    coEl.classList.replace('hidden','flex');
+    document.getElementById('alert-co-msg').textContent = `CO = ${data.co.toFixed(2)} ppm (threshold: ${thresholds.co})`;
+    if (!alertActive.co) logAlarm('CO', data.co, thresholds.co, data.timestamp);
+    alertActive.co = true;
+  } else { coEl.classList.replace('flex','hidden'); alertActive.co = false; }
+  const noxEl = document.getElementById('alert-nox');
+  if (noxTrip) {
+    noxEl.classList.replace('hidden','flex');
+    document.getElementById('alert-nox-msg').textContent = `NOx = ${data.nox.toFixed(2)} ppm (threshold: ${thresholds.nox})`;
+    if (!alertActive.nox) logAlarm('NOx', data.nox, thresholds.nox, data.timestamp);
+    alertActive.nox = true;
+  } else { noxEl.classList.replace('flex','hidden'); alertActive.nox = false; }
+}
+function logAlarm(gas, value, thresh, ts) {
+  const time = ts ? new Date(ts).toLocaleTimeString() : new Date().toLocaleTimeString();
+  const logEl = document.getElementById('alarm-log');
+  const placeholder = logEl.querySelector('.italic');
+  if (placeholder) placeholder.remove();
+  const p = document.createElement('p');
+  p.className = gas === 'CO' ? 'text-red-400 font-mono text-xs' : 'text-orange-400 font-mono text-xs';
+  p.textContent = `[${time}] ⚠ ${gas} alarm: ${value.toFixed(2)} ppm > ${thresh} ppm`;
+  logEl.prepend(p);
+}
+function clearAlarmLog() {
+  alarmLogData = []; alertActive = { co:false, nox:false };
+  document.getElementById('alarm-log').innerHTML = '<p class="text-slate-600 italic">No alarms recorded yet.</p>';
+}
+// ── History from Firebase ─────────────────────────────────────────────────────
+async function loadHistory() {
+  const tbody = document.getElementById('hist-tbody');
+  tbody.innerHTML = '<tr><td colspan="7" class="px-3 py-6 text-center text-slate-500">Loading…</td></tr>';
+  try {
+    const snap = await db.ref('/history').orderByChild('idx').limitToLast(100).once('value');
+    const rows = [];
+    snap.forEach(child => rows.unshift(child.val()));
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="7" class="px-3 py-6 text-center text-slate-600 italic">No records yet</td></tr>';
+      return;
+    }
+    tbody.innerHTML = rows.map(r => `
+      <tr class="hover:bg-zinc-700/30 transition-colors">
+        <td class="px-3 py-2 text-slate-500">${r.idx ?? ''}</td>
+        <td class="px-3 py-2 font-mono text-slate-400 text-xs whitespace-nowrap">${new Date(r.timestamp).toLocaleString()}</td>
+        <td class="px-3 py-2 text-right text-blue-400">${(+r.co).toFixed(2)}</td>
+        <td class="px-3 py-2 text-right text-purple-400">${(+r.nox).toFixed(2)}</td>
+        <td class="px-3 py-2 text-right text-amber-400">${(+r.temp).toFixed(1)}</td>
+        <td class="px-3 py-2 text-right text-cyan-400">${(+r.hum).toFixed(1)}</td>
+        <td class="px-3 py-2 text-center">
+          <span class="px-2 py-0.5 rounded-full text-xs font-semibold ${r.is_running===1?'bg-emerald-500/15 text-emerald-400':'bg-zinc-700 text-slate-500'}">
+            ${r.is_running===1?'Running':'Stopped'}
+          </span>
+        </td>
+      </tr>`).join('');
+  } catch(e) {
+    tbody.innerHTML = `<tr><td colspan="7" class="px-3 py-6 text-center text-red-400">Error: ${e.message}</td></tr>`;
+  }
+}
+
+// ── Thresholds ────────────────────────────────────────────────────────────────
+function applyThresholds() {
+  thresholds.co  = parseFloat(document.getElementById('co-thresh-slider').value);
+  thresholds.nox = parseFloat(document.getElementById('nox-thresh-slider').value);
+  const msg = document.getElementById('thresh-saved-msg');
+  msg.classList.remove('hidden');
+  setTimeout(() => msg.classList.add('hidden'), 2000);
+}
+// ── CSV export ────────────────────────────────────────────────────────────────
+function exportCSV() {
+  if (!sessionData.length) { alert('No data yet.'); return; }
+  const csv = ['timestamp,co,nox,temp,hum,is_running',
+    ...sessionData.map(d => `${d.timestamp},${d.co},${d.nox},${d.temp},${d.hum},${d.is_running}`)
+  ].join('\r\n');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([csv], {type:'text/csv'}));
+  a.download = `emissions_${new Date().toISOString().slice(0,19).replace(/:/g,'-')}.csv`;
+  a.click();
+}
+// ── Firebase Realtime Listener ────────────────────────────────────────────────
+db.ref('/latest').on('value', snap => {
+  const data = snap.val();
+  if (!data) return;
+
+  // Update badge
+  setBadge('badge-firebase', true, 'Firebase: Live', 'Firebase: Offline');
+
+  recordCount++;
+  const timeStr = new Date(data.timestamp || Date.now()).toLocaleTimeString();
+  document.getElementById('header-ts').textContent = `Last: ${timeStr}`;
+
+  document.getElementById('co-val').textContent   = (+data.co).toFixed(2);
+  document.getElementById('nox-val').textContent  = (+data.nox).toFixed(2);
+  document.getElementById('temp-val').textContent = (+data.temp).toFixed(1);
+  document.getElementById('hum-val').textContent  = (+data.hum).toFixed(1);
+
+  setBadge('badge-engine', data.is_running === 1, 'Engine: Running', 'Engine: Stopped');
+
+  pushToChart(gasChart, timeStr, [+data.co, +data.nox]);
+  pushToChart(envChart, timeStr, [+data.temp, +data.hum]);
+
+  sessionData.push({ timestamp:data.timestamp, co:data.co, nox:data.nox, temp:data.temp, hum:data.hum, is_running:data.is_running });
+
+  evaluateAlerts(data);
+}, err => {
+  console.error('Firebase error:', err);
+  setBadge('badge-firebase', false, 'Firebase: Live', 'Firebase: Offline');
+});
+</script>
+</body>
+</html>
