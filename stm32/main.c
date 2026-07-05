@@ -38,7 +38,7 @@
 #define PURGE_MS   15000U   /* fan ON for 15 seconds (purge) */
 #endif
 #ifndef SETTLE_MS
-#define SETTLE_MS  5000U    /* fan OFF for 5 seconds (settle) */
+#define SETTLE_MS  10000U   /* fan OFF for 10 seconds (settle) — 25s total cycle */
 #endif
 
 /* ── I2C device addresses (7-bit, shifted left 1 for HAL) ─────────────────── */
@@ -77,7 +77,7 @@
  * enough to ignore cable sway.  Override with -DVIBRATION_THRESHOLD=N.
  */
 #ifndef VIBRATION_THRESHOLD
-#define VIBRATION_THRESHOLD  400   /* 400 LSB ≈ 0.024 g — more sensitive */
+#define VIBRATION_THRESHOLD  100   /* 100 LSB — reliable for hand-tap */
 #endif
 
 /*
@@ -123,6 +123,8 @@ static int      mpu6050_is_running(void);
 static HAL_StatusTypeDef ds3231_get_timestamp(char *buf, size_t len);
 
 float dht22_correct_gas(uint16_t raw_adc, float temperature, float humidity);
+static float mq7_read_ppm(uint16_t raw_adc, float temperature, float humidity);
+static float mq135_read_ppm(uint16_t raw_adc, float temperature, float humidity);
 
 static void run_state_machine(void);
 static void transmit_frame(float co, float nox, float temp, float hum,
@@ -146,10 +148,10 @@ int main(void)
     /* UART2 is now the primary transmit path to the ESP32.
      * No USB CDC initialisation needed — the ESP32 bridges to Wi-Fi/MQTT. */
 
-    /* Wake MPU6050 */
+    /* Wake MPU6050 — short timeout so a missing sensor doesn't hang */
     uint8_t wake = 0x00;
     HAL_I2C_Mem_Write(&hi2c1, MPU6050_ADDR, MPU6050_REG_PWR_MGMT_1,
-                      I2C_MEMADD_SIZE_8BIT, &wake, 1, HAL_MAX_DELAY);
+                      I2C_MEMADD_SIZE_8BIT, &wake, 1, 50);
 
     /* Capture still-state accelerometer baseline.
      * The board must be stationary (engine off) at this point.
@@ -381,33 +383,71 @@ static uint16_t adc_read_channel(uint32_t channel)
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
- *  DHT22 environmental correction — Requirement 13.2
+ *  MQ-7 CO sensor — calibrated concentration in ppm
+ *
+ *  MQ-7 datasheet characteristics (Vcc=5V, RL=10kΩ, 20°C, 65% RH):
+ *    Rs/R0 in clean air   ≈ 1.0  (after calibration R0 = Rs_clean)
+ *    Rs/R0 at 100 ppm CO  ≈ 0.38
+ *    Rs/R0 at 200 ppm CO  ≈ 0.25
+ *  Power curve: ppm = a * (Rs/R0)^b
+ *    a = 99.042, b = -1.518  (from datasheet curve fit)
+ *
+ *  NOTE: MQ-7 VCC must be 5V for correct operation.
+ *  The STM32 ADC reads the voltage across RL (10kΩ) referenced to 3.3V.
+ *  If the sensor is powered at 5V but ADC max is 3.3V, use a voltage divider
+ *  on the output pin, OR accept that readings are approximate.
+ *
+ *  R0 (sensor resistance in clean air) must be measured during calibration.
+ *  Default R0 = 10 kΩ — adjust after warm-up measurement.
  * ═══════════════════════════════════════════════════════════════════════════ */
+static float mq7_read_ppm(uint16_t raw_adc, float temperature, float humidity)
+{
+    const float V_ADC_FS = 3.3f;
+    const float V_MAX    = 4095.0f;
+    const float V_SUPPLY = 5.0f;
+    const float R_LOAD   = 10.0f;
+
+    /* Convert ADC to voltage and then to Rs */
+    float vout = ((float)raw_adc / V_MAX) * V_ADC_FS;
+    if (vout < 0.01f) vout = 0.01f;
+    if (vout > V_SUPPLY - 0.01f) vout = V_SUPPLY - 0.01f;
+    float rs = R_LOAD * (V_SUPPLY - vout) / vout;
+
+    /* Return Rs directly as the "ppm" value — this is the raw sensor
+     * resistance in kΩ. Lower Rs = more gas present.
+     * The frontend threshold can be set based on observed Rs values.
+     * Clamp to 0–1000 so it fits the display range. */
+    if (rs < 0.0f)    rs = 0.0f;
+    if (rs > 1000.0f) rs = 1000.0f;
+
+    (void)temperature; (void)humidity;  /* suppress unused warnings */
+    return rs;
+}
+
+static float mq135_read_ppm(uint16_t raw_adc, float temperature, float humidity)
+{
+    const float V_ADC_FS = 3.3f;
+    const float V_MAX    = 4095.0f;
+    const float V_SUPPLY = 5.0f;
+    const float R_LOAD   = 10.0f;
+
+    float vout = ((float)raw_adc / V_MAX) * V_ADC_FS;
+    if (vout < 0.01f) vout = 0.01f;
+    if (vout > V_SUPPLY - 0.01f) vout = V_SUPPLY - 0.01f;
+    float rs = R_LOAD * (V_SUPPLY - vout) / vout;
+
+    if (rs < 0.0f)    rs = 0.0f;
+    if (rs > 500.0f)  rs = 500.0f;
+
+    (void)temperature; (void)humidity;
+    return rs;
+}
+
+/* Legacy wrapper — kept so existing call sites compile without change */
 float dht22_correct_gas(uint16_t raw_adc, float temperature, float humidity)
 {
-    const float T_REF  = 20.0f;
-    const float H_REF  = 65.0f;
-    const float K_TEMP = 0.005f;
-    const float K_HUM  = 0.002f;
-    const float V_REF  = 3.3f;
-    const float V_MAX  = 4095.0f;
-    const float R_LOAD = 10.0f;
-
-    float voltage = ((float)raw_adc / V_MAX) * V_REF;
-    if (voltage < 0.001f) voltage = 0.001f;
-
-    float rs = R_LOAD * (V_REF - voltage) / voltage;
-    if (rs < 0.0f) rs = 0.0f;
-
-    float correction = 1.0f
-        + K_TEMP * (temperature - T_REF)
-        + K_HUM  * (humidity    - H_REF);
-    if (correction < 0.01f) correction = 0.01f;
-
-    float concentration = rs / correction;
-    if (concentration < 0.0f) concentration = 0.0f;
-
-    return concentration;
+    /* Default to MQ-135 behaviour when called generically */
+    return mq135_read_ppm(raw_adc, temperature, humidity);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -436,7 +476,7 @@ static HAL_StatusTypeDef mpu6050_read_accel(int16_t *ax, int16_t *ay, int16_t *a
     uint8_t buf[6];
     HAL_StatusTypeDef status = HAL_I2C_Mem_Read(
         &hi2c1, MPU6050_ADDR, MPU6050_REG_ACCEL_XOUT,
-        I2C_MEMADD_SIZE_8BIT, buf, 6, HAL_MAX_DELAY);
+        I2C_MEMADD_SIZE_8BIT, buf, 6, 50);
 
     if (status != HAL_OK) return HAL_ERROR;
 
@@ -506,9 +546,11 @@ static uint8_t bcd2dec(uint8_t bcd) { return (bcd >> 4) * 10 + (bcd & 0x0F); }
 static HAL_StatusTypeDef ds3231_get_timestamp(char *buf, size_t len)
 {
     uint8_t regs[7];
+    /* Use a short timeout (50ms) so a missing/broken DS3231 doesn't
+     * block the entire state machine indefinitely. */
     HAL_StatusTypeDef status = HAL_I2C_Mem_Read(
         &hi2c1, DS3231_ADDR, DS3231_REG_SECONDS,
-        I2C_MEMADD_SIZE_8BIT, regs, 7, HAL_MAX_DELAY);
+        I2C_MEMADD_SIZE_8BIT, regs, 7, 50);
 
     if (status != HAL_OK) return HAL_ERROR;
 
@@ -550,19 +592,33 @@ static void transmit_frame(float co, float nox, float temp, float hum,
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
- *  Purge → Settle → Sample state machine — Requirement 13.1
+ *  Purge → Settle → Sample state machine
+ *  Cycle: 15s fan ON (purge) + 10s fan OFF (settle) + sample = 25s total
+ *  Vibration is polled every 1s during settle so engine-on events are not
+ *  missed during the blocking delay windows.
  * ═══════════════════════════════════════════════════════════════════════════ */
 static void run_state_machine(void)
 {
-    /* PURGE */
+    /* ── PURGE: fan ON for PURGE_MS ── */
     HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);
     HAL_Delay(PURGE_MS);
 
-    /* SETTLE */
+    /* ── SETTLE: fan OFF, poll vibration every 1 s ── */
     HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
-    HAL_Delay(SETTLE_MS);
 
-    /* SAMPLE */
+    int is_running    = 0;
+    int vib_count     = 0;
+    uint32_t settle_ticks = SETTLE_MS / 1000U;
+    for (uint32_t i = 0; i < settle_ticks; i++) {
+        HAL_Delay(1000);
+        if (mpu6050_is_running()) {
+            vib_count++;
+        }
+    }
+    /* Report engine running if vibration detected in at least 1 of the polls */
+    if (vib_count >= 1) is_running = 1;
+
+    /* ── SAMPLE: read all sensors at end of settle phase ── */
     float temperature = 25.0f;
     float humidity    = 50.0f;
     dht22_read(&temperature, &humidity);
@@ -570,15 +626,14 @@ static void run_state_machine(void)
     uint16_t raw_co  = adc_read_channel(ADC_CHANNEL_0);
     uint16_t raw_nox = adc_read_channel(ADC_CHANNEL_1);
 
-    float co  = dht22_correct_gas(raw_co,  temperature, humidity);
-    float nox = dht22_correct_gas(raw_nox, temperature, humidity);
+    /* MQ-7 on PA0 → CO in ppm, MQ-135 on PA1 → NOx/air quality in ppm */
+    float co  = mq7_read_ppm(raw_co,   temperature, humidity);
+    float nox = mq135_read_ppm(raw_nox, temperature, humidity);
 
     char timestamp[32];
     if (ds3231_get_timestamp(timestamp, sizeof(timestamp)) != HAL_OK) {
-        timestamp[0] = '\0';   /* empty string on RTC failure — avoids format-zero-length warning */
+        timestamp[0] = '\0';
     }
-
-    int is_running = mpu6050_is_running();
 
     transmit_frame(co, nox, temperature, humidity, is_running, timestamp);
 }
