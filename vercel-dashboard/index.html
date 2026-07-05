@@ -336,7 +336,7 @@ function evaluateAlerts(data) {
   } else { noxEl.classList.replace('flex','hidden'); alertActive.nox = false; }
 }
 function logAlarm(gas, value, thresh, ts) {
-  const time = ts ? new Date(ts).toLocaleTimeString() : new Date().toLocaleTimeString();
+  const time = fmtTime(ts);
   const logEl = document.getElementById('alarm-log');
   const placeholder = logEl.querySelector('.italic');
   if (placeholder) placeholder.remove();
@@ -364,7 +364,7 @@ async function loadHistory() {
     tbody.innerHTML = rows.map(r => `
       <tr class="hover:bg-zinc-700/30 transition-colors">
         <td class="px-3 py-2 text-slate-500">${r.idx ?? ''}</td>
-        <td class="px-3 py-2 font-mono text-slate-400 text-xs whitespace-nowrap">${new Date(r.timestamp).toLocaleString()}</td>
+        <td class="px-3 py-2 font-mono text-slate-400 text-xs whitespace-nowrap">${fmtDateTime(r.timestamp)}</td>
         <td class="px-3 py-2 text-right text-blue-400">${(+r.co).toFixed(2)}</td>
         <td class="px-3 py-2 text-right text-purple-400">${(+r.nox).toFixed(2)}</td>
         <td class="px-3 py-2 text-right text-amber-400">${(+r.temp).toFixed(1)}</td>
@@ -388,6 +388,21 @@ function applyThresholds() {
   msg.classList.remove('hidden');
   setTimeout(() => msg.classList.add('hidden'), 2000);
 }
+// ── Timestamp helpers ─────────────────────────────────────────────────────────
+// The ESP32 NTP clock is set to IST (UTC+5:30) but appends a 'Z' (UTC) suffix,
+// so the raw string is technically mis-labelled.  Stripping the Z before
+// constructing a Date lets the browser treat it as local time, which gives the
+// correct wall-clock reading regardless of the viewer's locale.
+function parseTS(ts) {
+  if (!ts) return new Date();
+  // Remove trailing Z so JS Date constructor treats it as local time
+  const clean = String(ts).replace(/Z$/i, '');
+  const d = new Date(clean);
+  return isNaN(d.getTime()) ? new Date() : d;
+}
+function fmtTime(ts)     { return parseTS(ts).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'}); }
+function fmtDateTime(ts) { return parseTS(ts).toLocaleString([], {dateStyle:'short', timeStyle:'medium'}); }
+
 // ── CSV export ────────────────────────────────────────────────────────────────
 function exportCSV() {
   if (!sessionData.length) { alert('No data yet.'); return; }
@@ -408,7 +423,7 @@ db.ref('/latest').on('value', snap => {
   setBadge('badge-firebase', true, 'Firebase: Live', 'Firebase: Offline');
 
   recordCount++;
-  const timeStr = new Date(data.timestamp || Date.now()).toLocaleTimeString();
+  const timeStr = fmtTime(data.timestamp);
   document.getElementById('header-ts').textContent = `Last: ${timeStr}`;
 
   document.getElementById('co-val').textContent   = (+data.co).toFixed(2);
