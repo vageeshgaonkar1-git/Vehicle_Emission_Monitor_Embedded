@@ -21,6 +21,17 @@
     .tab-btn.active { background: #0f766e; color: #f0fdfa; }
     .tab-btn        { transition: background 0.15s, color 0.15s; }
     input[type=range] { accent-color: #0d9488; }
+    /* Diagnostic band progress bars */
+    .bar-track { background: rgba(63,63,70,0.7); border-radius: 9999px; overflow: hidden; height: 8px; }
+    .bar-fill  { height: 100%; border-radius: 9999px; transition: width 0.4s ease, background-color 0.4s ease; }
+    /* Verdict glow pulse */
+    @keyframes verdict-pulse {
+      0%,100% { box-shadow: 0 0 0 0 var(--vglow,rgba(16,185,129,0)); }
+      50%     { box-shadow: 0 0 10px 3px var(--vglow,rgba(16,185,129,0.35)); }
+    }
+    .verdict-pulse { animation: verdict-pulse 2s ease-in-out infinite; }
+    /* Profile selector active state */
+    .active-profile { border-color: #0d9488 !important; background: rgba(13,148,136,0.15) !important; }
   </style>
 </head>
 <body class="bg-slate-900 text-slate-100 min-h-screen font-sans antialiased">
@@ -93,6 +104,89 @@
         <p class="text-xs text-slate-500 mt-1">% RH</p>
       </div>
     </div>
+    <!-- DIAGNOSTIC ASSESSMENT PANEL -->
+    <div class="bg-zinc-800 rounded-2xl border border-zinc-700 p-6">
+      <div class="flex flex-wrap items-center justify-between gap-3 mb-5">
+        <div>
+          <h2 class="font-semibold text-slate-200">🔬 Diagnostic Assessment</h2>
+          <p class="text-xs text-slate-500 mt-0.5">Real-time emission band classification</p>
+        </div>
+        <!-- Verdict badge -->
+        <div id="diag-verdict"
+             class="verdict-pulse inline-flex items-center gap-2 px-4 py-1.5 rounded-full text-sm font-bold
+                    border border-zinc-600 bg-zinc-700 text-slate-400"
+             style="--vglow:rgba(113,113,122,0.3)">
+          <span id="diag-verdict-dot" class="w-3 h-3 rounded-full bg-zinc-500 inline-block"></span>
+          <span id="diag-verdict-text">Awaiting data…</span>
+        </div>
+      </div>
+
+      <!-- Band rows -->
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+
+        <!-- CO band -->
+        <div class="bg-zinc-900/50 rounded-xl p-4 space-y-2">
+          <div class="flex items-center justify-between">
+            <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Carbon Monoxide (CO)</span>
+            <span id="diag-co-badge"
+                  class="text-xs font-bold px-2.5 py-0.5 rounded-full bg-zinc-700 text-slate-400">—</span>
+          </div>
+          <div class="flex items-end gap-2">
+            <span id="diag-co-val" class="text-2xl font-bold text-blue-400">—</span>
+            <span class="text-xs text-slate-500 mb-0.5">ppm</span>
+          </div>
+          <div class="bar-track">
+            <div id="diag-co-bar" class="bar-fill bg-emerald-500" style="width:0%"></div>
+          </div>
+          <div class="flex justify-between text-xs text-slate-600">
+            <span>0</span>
+            <span id="diag-co-limit-label">limit: 300 ppm</span>
+          </div>
+          <p id="diag-co-desc" class="text-xs text-slate-500 italic"></p>
+        </div>
+
+        <!-- NOx band -->
+        <div class="bg-zinc-900/50 rounded-xl p-4 space-y-2">
+          <div class="flex items-center justify-between">
+            <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Nitrogen Oxides (NOx)</span>
+            <span id="diag-nox-badge"
+                  class="text-xs font-bold px-2.5 py-0.5 rounded-full bg-zinc-700 text-slate-400">—</span>
+          </div>
+          <div class="flex items-end gap-2">
+            <span id="diag-nox-val" class="text-2xl font-bold text-purple-400">—</span>
+            <span class="text-xs text-slate-500 mb-0.5">ppm</span>
+          </div>
+          <div class="bar-track">
+            <div id="diag-nox-bar" class="bar-fill bg-emerald-500" style="width:0%"></div>
+          </div>
+          <div class="flex justify-between text-xs text-slate-600">
+            <span>0</span>
+            <span id="diag-nox-limit-label">limit: 150 ppm</span>
+          </div>
+          <p id="diag-nox-desc" class="text-xs text-slate-500 italic"></p>
+        </div>
+      </div>
+
+      <!-- Scale legend -->
+      <div class="flex flex-wrap gap-4 mt-4 pt-4 border-t border-zinc-700/50">
+        <span class="flex items-center gap-1.5 text-xs text-slate-400">
+          <span class="w-3 h-3 rounded-full bg-emerald-500 inline-block"></span>
+          🟢 OPTIMAL — ≤ 20% of limit
+        </span>
+        <span class="flex items-center gap-1.5 text-xs text-slate-400">
+          <span class="w-3 h-3 rounded-full bg-yellow-400 inline-block"></span>
+          🟡 DEGRADED — 20–100% of limit
+        </span>
+        <span class="flex items-center gap-1.5 text-xs text-slate-400">
+          <span class="w-3 h-3 rounded-full bg-red-500 inline-block"></span>
+          🔴 FAILURE — > 100% of limit
+        </span>
+        <span class="ml-auto text-xs text-slate-500">
+          Profile: <span id="diag-profile-label" class="text-teal-400 font-medium">BS6 Petrol</span>
+        </span>
+      </div>
+    </div>
+
     <div class="bg-zinc-800 rounded-2xl border border-zinc-700 p-6">
       <div class="flex items-center justify-between mb-4">
         <h2 class="font-semibold text-slate-200">Gas Concentration — CO &amp; NOx</h2>
@@ -139,10 +233,11 @@
               <th class="px-3 py-2.5 text-right">Temp</th>
               <th class="px-3 py-2.5 text-right">Hum</th>
               <th class="px-3 py-2.5 text-center">Engine</th>
+              <th class="px-3 py-2.5 text-center">Band</th>
             </tr>
           </thead>
           <tbody id="hist-tbody">
-            <tr><td colspan="7" class="px-3 py-6 text-center text-slate-600 italic">Click "Refresh" to load</td></tr>
+            <tr><td colspan="8" class="px-3 py-6 text-center text-slate-600 italic">Click "Refresh" to load</td></tr>
           </tbody>
         </table>
       </div>
@@ -150,6 +245,65 @@
   </section>
   <!-- SETTINGS TAB -->
   <section id="tab-settings" class="hidden space-y-6">
+
+    <!-- VEHICLE PROFILE -->
+    <div class="bg-zinc-800 rounded-2xl border border-zinc-700 p-6 max-w-xl">
+      <h2 class="font-semibold text-slate-200 mb-1">Vehicle Emission Profile</h2>
+      <p class="text-xs text-slate-500 mb-5">Sets the failure limits used by the Diagnostic Assessment panel. Optimal and Degraded bands are derived automatically.</p>
+      <div class="grid grid-cols-2 gap-3 mb-5" id="profile-buttons">
+        <button onclick="selectProfile('bs6_petrol',this)"
+                class="profile-btn active-profile text-left px-4 py-3 rounded-xl border border-teal-600 bg-teal-900/30 transition-colors">
+          <p class="text-sm font-semibold text-teal-300">BS6 Petrol</p>
+          <p class="text-xs text-slate-500 mt-0.5">CO ≤ 300 ppm · NOx ≤ 150 ppm</p>
+        </button>
+        <button onclick="selectProfile('bs6_diesel',this)"
+                class="profile-btn text-left px-4 py-3 rounded-xl border border-zinc-700 bg-zinc-900/40 hover:border-zinc-500 transition-colors">
+          <p class="text-sm font-semibold text-slate-300">BS6 Diesel</p>
+          <p class="text-xs text-slate-500 mt-0.5">CO ≤ 150 ppm · NOx ≤ 250 ppm</p>
+        </button>
+        <button onclick="selectProfile('bs4_petrol',this)"
+                class="profile-btn text-left px-4 py-3 rounded-xl border border-zinc-700 bg-zinc-900/40 hover:border-zinc-500 transition-colors">
+          <p class="text-sm font-semibold text-slate-300">BS4 Petrol</p>
+          <p class="text-xs text-slate-500 mt-0.5">CO ≤ 1000 ppm · NOx ≤ 400 ppm</p>
+        </button>
+        <button onclick="selectProfile('bs4_diesel',this)"
+                class="profile-btn text-left px-4 py-3 rounded-xl border border-zinc-700 bg-zinc-900/40 hover:border-zinc-500 transition-colors">
+          <p class="text-sm font-semibold text-slate-300">BS4 Diesel</p>
+          <p class="text-xs text-slate-500 mt-0.5">CO ≤ 500 ppm · NOx ≤ 600 ppm</p>
+        </button>
+      </div>
+      <!-- Active profile derived bands (read-only info) -->
+      <div class="bg-zinc-900/60 rounded-xl px-4 py-3 text-xs text-slate-400 space-y-1" id="profile-info">
+        <p class="font-semibold text-slate-300 mb-1">Derived diagnostic bands</p>
+        <div class="grid grid-cols-3 gap-2 text-center">
+          <div class="bg-emerald-500/10 rounded-lg py-2">
+            <p class="text-emerald-400 font-bold" id="pi-co-opt">—</p>
+            <p class="text-slate-500 text-xs mt-0.5">CO Optimal</p>
+          </div>
+          <div class="bg-yellow-400/10 rounded-lg py-2">
+            <p class="text-yellow-300 font-bold" id="pi-co-deg">—</p>
+            <p class="text-slate-500 text-xs mt-0.5">CO Degraded</p>
+          </div>
+          <div class="bg-red-500/10 rounded-lg py-2">
+            <p class="text-red-400 font-bold" id="pi-co-fail">—</p>
+            <p class="text-slate-500 text-xs mt-0.5">CO Failure</p>
+          </div>
+          <div class="bg-emerald-500/10 rounded-lg py-2">
+            <p class="text-emerald-400 font-bold" id="pi-nox-opt">—</p>
+            <p class="text-slate-500 text-xs mt-0.5">NOx Optimal</p>
+          </div>
+          <div class="bg-yellow-400/10 rounded-lg py-2">
+            <p class="text-yellow-300 font-bold" id="pi-nox-deg">—</p>
+            <p class="text-slate-500 text-xs mt-0.5">NOx Degraded</p>
+          </div>
+          <div class="bg-red-500/10 rounded-lg py-2">
+            <p class="text-red-400 font-bold" id="pi-nox-fail">—</p>
+            <p class="text-slate-500 text-xs mt-0.5">NOx Failure</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div class="bg-zinc-800 rounded-2xl border border-zinc-700 p-6 max-w-xl">
       <h2 class="font-semibold text-slate-200 mb-6">Alert Thresholds</h2>
       <div class="mb-6">
@@ -256,6 +410,122 @@ let alarmLogData  = [];
 let recordCount   = 0;
 let thresholds    = { co: 50, nox: 25 };
 let alertActive   = { co: false, nox: false };
+// ── Vehicle emission profiles ─────────────────────────────────────────────────
+// coLimit / noxLimit = 100% failure point (ppm).
+// Bands are derived dynamically:  optimal ≤ 20%,  degraded 20-100%,  failure > 100%
+const PROFILES = {
+  bs6_petrol: { label:'BS6 Petrol',  coLimit: 300,  noxLimit: 150  },
+  bs6_diesel: { label:'BS6 Diesel',  coLimit: 150,  noxLimit: 250  },
+  bs4_petrol: { label:'BS4 Petrol',  coLimit: 1000, noxLimit: 400  },
+  bs4_diesel: { label:'BS4 Diesel',  coLimit: 500,  noxLimit: 600  },
+};
+let activeProfile = PROFILES.bs6_petrol;
+
+function selectProfile(key, btn) {
+  activeProfile = PROFILES[key];
+  // update button styles
+  document.querySelectorAll('.profile-btn').forEach(b => b.classList.remove('active-profile'));
+  btn.classList.add('active-profile');
+  // update label in live tab
+  document.getElementById('diag-profile-label').textContent = activeProfile.label;
+  // update derived band info table in settings
+  renderProfileInfo();
+  // re-run diagnostics against last known data if available
+  if (sessionData.length) {
+    const last = sessionData[sessionData.length - 1];
+    updateDiagnostics(+last.co, +last.nox);
+  }
+}
+
+function renderProfileInfo() {
+  const { coLimit, noxLimit } = activeProfile;
+  document.getElementById('pi-co-opt').textContent  = `< ${(coLimit * 0.2).toFixed(0)} ppm`;
+  document.getElementById('pi-co-deg').textContent  = `${(coLimit * 0.2).toFixed(0)}–${coLimit} ppm`;
+  document.getElementById('pi-co-fail').textContent = `> ${coLimit} ppm`;
+  document.getElementById('pi-nox-opt').textContent  = `< ${(noxLimit * 0.2).toFixed(0)} ppm`;
+  document.getElementById('pi-nox-deg').textContent  = `${(noxLimit * 0.2).toFixed(0)}–${noxLimit} ppm`;
+  document.getElementById('pi-nox-fail').textContent = `> ${noxLimit} ppm`;
+  document.getElementById('diag-co-limit-label').textContent  = `limit: ${coLimit} ppm`;
+  document.getElementById('diag-nox-limit-label').textContent = `limit: ${noxLimit} ppm`;
+}
+
+// Returns { band, color, barColor, dot, glow, desc } for a given ppm vs limit
+function classifyBand(ppm, limit) {
+  const pct = ppm / limit;
+  if (pct <= 0.20) return {
+    band: '🟢 OPTIMAL',
+    badgeClass: 'bg-emerald-500/20 text-emerald-300',
+    barColor:   '#10b981',
+    dotColor:   '#10b981',
+    glow:       'rgba(16,185,129,0.35)',
+    desc:       'Catalytic converter is scrubbing efficiently.'
+  };
+  if (pct <= 1.00) return {
+    band: '🟡 DEGRADED',
+    badgeClass: 'bg-yellow-400/20 text-yellow-300',
+    barColor:   '#facc15',
+    dotColor:   '#facc15',
+    glow:       'rgba(250,204,21,0.35)',
+    desc:       'Aging catalyst or slightly rich mixture. Maintenance advised.'
+  };
+  return {
+    band: '🔴 FAILURE',
+    badgeClass: 'bg-red-500/20 text-red-400',
+    barColor:   '#ef4444',
+    dotColor:   '#ef4444',
+    glow:       'rgba(239,68,68,0.45)',
+    desc:       'Emission control system failure. PUC / regulatory hazard.'
+  };
+}
+
+function bandLabel(ppm, limit) {
+  const pct = ppm / limit;
+  if (pct <= 0.20) return 'OPTIMAL';
+  if (pct <= 1.00) return 'DEGRADED';
+  return 'FAILURE';
+}
+
+function updateDiagnostics(co, nox) {
+  const { coLimit, noxLimit } = activeProfile;
+  const coBand  = classifyBand(co,  coLimit);
+  const noxBand = classifyBand(nox, noxLimit);
+
+  // CO widgets
+  document.getElementById('diag-co-val').textContent  = co.toFixed(2);
+  const coBadgeEl = document.getElementById('diag-co-badge');
+  coBadgeEl.textContent  = coBand.band;
+  coBadgeEl.className    = `text-xs font-bold px-2.5 py-0.5 rounded-full ${coBand.badgeClass}`;
+  const coBar = document.getElementById('diag-co-bar');
+  coBar.style.width           = `${Math.min((co / coLimit) * 100, 100)}%`;
+  coBar.style.backgroundColor = coBand.barColor;
+  document.getElementById('diag-co-desc').textContent = coBand.desc;
+
+  // NOx widgets
+  document.getElementById('diag-nox-val').textContent = nox.toFixed(2);
+  const noxBadgeEl = document.getElementById('diag-nox-badge');
+  noxBadgeEl.textContent  = noxBand.band;
+  noxBadgeEl.className    = `text-xs font-bold px-2.5 py-0.5 rounded-full ${noxBand.badgeClass}`;
+  const noxBar = document.getElementById('diag-nox-bar');
+  noxBar.style.width           = `${Math.min((nox / noxLimit) * 100, 100)}%`;
+  noxBar.style.backgroundColor = noxBand.barColor;
+  document.getElementById('diag-nox-desc').textContent = noxBand.desc;
+
+  // Overall verdict — worst of the two
+  const worstPct = Math.max(co / coLimit, nox / noxLimit);
+  const overall  = classifyBand(worstPct * coLimit, coLimit); // re-use via worst ratio
+  // Determine overall directly
+  let verdict;
+  if      (worstPct >  1.00) verdict = { text:'🔴 FAILURE — Emission Control Failed',   dot:'#ef4444', glow:'rgba(239,68,68,0.45)',    cls:'bg-red-500/20 text-red-400 border-red-500/40' };
+  else if (worstPct >  0.20) verdict = { text:'🟡 DEGRADED — Maintenance Advised',       dot:'#facc15', glow:'rgba(250,204,21,0.35)',   cls:'bg-yellow-400/15 text-yellow-300 border-yellow-400/40' };
+  else                       verdict = { text:'🟢 OPTIMAL — Likely BS6 Compliant',       dot:'#10b981', glow:'rgba(16,185,129,0.35)',   cls:'bg-emerald-500/15 text-emerald-400 border-emerald-500/40' };
+
+  const vEl = document.getElementById('diag-verdict');
+  vEl.className = `verdict-pulse inline-flex items-center gap-2 px-4 py-1.5 rounded-full text-sm font-bold border ${verdict.cls}`;
+  vEl.style.setProperty('--vglow', verdict.glow);
+  document.getElementById('diag-verdict-dot').style.backgroundColor = verdict.dot;
+  document.getElementById('diag-verdict-text').textContent = verdict.text;
+}
+
 // ── Tabs ──────────────────────────────────────────────────────────────────────
 function showTab(name, btn) {
   ['live','history','settings'].forEach(t => {
@@ -352,16 +622,25 @@ function clearAlarmLog() {
 // ── History from Firebase ─────────────────────────────────────────────────────
 async function loadHistory() {
   const tbody = document.getElementById('hist-tbody');
-  tbody.innerHTML = '<tr><td colspan="7" class="px-3 py-6 text-center text-slate-500">Loading…</td></tr>';
+  tbody.innerHTML = '<tr><td colspan="8" class="px-3 py-6 text-center text-slate-500">Loading…</td></tr>';
   try {
     const snap = await db.ref('/history').orderByChild('idx').limitToLast(100).once('value');
     const rows = [];
     snap.forEach(child => rows.unshift(child.val()));
     if (!rows.length) {
-      tbody.innerHTML = '<tr><td colspan="7" class="px-3 py-6 text-center text-slate-600 italic">No records yet</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="8" class="px-3 py-6 text-center text-slate-600 italic">No records yet</td></tr>';
       return;
     }
-    tbody.innerHTML = rows.map(r => `
+    tbody.innerHTML = rows.map(r => {
+      const coBand  = bandLabel(+r.co,  activeProfile.coLimit);
+      const noxBand = bandLabel(+r.nox, activeProfile.noxLimit);
+      const worst   = [coBand, noxBand].includes('FAILURE') ? 'FAILURE'
+                    : [coBand, noxBand].includes('DEGRADED') ? 'DEGRADED' : 'OPTIMAL';
+      const bandCls = worst === 'FAILURE'  ? 'bg-red-500/15 text-red-400'
+                    : worst === 'DEGRADED' ? 'bg-yellow-400/15 text-yellow-300'
+                    : 'bg-emerald-500/15 text-emerald-400';
+      const bandIcon = worst === 'FAILURE' ? '🔴' : worst === 'DEGRADED' ? '🟡' : '🟢';
+      return `
       <tr class="hover:bg-zinc-700/30 transition-colors">
         <td class="px-3 py-2 text-slate-500">${r.idx ?? ''}</td>
         <td class="px-3 py-2 font-mono text-slate-400 text-xs whitespace-nowrap">${fmtDateTime(r.timestamp)}</td>
@@ -374,9 +653,15 @@ async function loadHistory() {
             ${r.is_running===1?'Running':'Stopped'}
           </span>
         </td>
-      </tr>`).join('');
+        <td class="px-3 py-2 text-center">
+          <span class="px-2 py-0.5 rounded-full text-xs font-semibold ${bandCls}">
+            ${bandIcon} ${worst}
+          </span>
+        </td>
+      </tr>`;
+    }).join('');
   } catch(e) {
-    tbody.innerHTML = `<tr><td colspan="7" class="px-3 py-6 text-center text-red-400">Error: ${e.message}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" class="px-3 py-6 text-center text-red-400">Error: ${e.message}</td></tr>`;
   }
 }
 
@@ -414,6 +699,9 @@ function exportCSV() {
   a.download = `emissions_${new Date().toISOString().slice(0,19).replace(/:/g,'-')}.csv`;
   a.click();
 }
+// ── Init ──────────────────────────────────────────────────────────────────────
+renderProfileInfo();   // populate Settings panel with default BS6 Petrol bands
+
 // ── Firebase Realtime Listener ────────────────────────────────────────────────
 db.ref('/latest').on('value', snap => {
   const data = snap.val();
@@ -438,6 +726,7 @@ db.ref('/latest').on('value', snap => {
 
   sessionData.push({ timestamp:data.timestamp, co:data.co, nox:data.nox, temp:data.temp, hum:data.hum, is_running:data.is_running });
 
+  updateDiagnostics(+data.co, +data.nox);
   evaluateAlerts(data);
 }, err => {
   console.error('Firebase error:', err);
