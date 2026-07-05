@@ -5,3 +5,6 @@ test-emissions.db
 .env
 .kiro/
 .vscode/
+
+# Local-only documentation (not for version control)
+project_documentation.md
