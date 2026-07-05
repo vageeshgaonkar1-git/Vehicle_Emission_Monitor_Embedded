@@ -77,7 +77,7 @@
  * enough to ignore cable sway.  Override with -DVIBRATION_THRESHOLD=N.
  */
 #ifndef VIBRATION_THRESHOLD
-#define VIBRATION_THRESHOLD  100   /* 100 LSB — reliable for hand-tap */
+#define VIBRATION_THRESHOLD  250   /* 250 LSB — reliable for hand-tap */
 #endif
 
 /*
@@ -407,21 +407,23 @@ static float mq7_read_ppm(uint16_t raw_adc, float temperature, float humidity)
     const float V_SUPPLY = 5.0f;
     const float R_LOAD   = 10.0f;
 
-    /* Convert ADC to voltage and then to Rs */
+    /* YOUR NEW CALIBRATED BASELINE */
+    const float R0       = 1.515f;
+
     float vout = ((float)raw_adc / V_MAX) * V_ADC_FS;
     if (vout < 0.01f) vout = 0.01f;
     if (vout > V_SUPPLY - 0.01f) vout = V_SUPPLY - 0.01f;
+
     float rs = R_LOAD * (V_SUPPLY - vout) / vout;
 
-    /* Return Rs directly as the "ppm" value — this is the raw sensor
-     * resistance in kΩ. Lower Rs = more gas present.
-     * The frontend threshold can be set based on observed Rs values.
-     * Clamp to 0–1000 so it fits the display range. */
-    if (rs < 0.0f)    rs = 0.0f;
-    if (rs > 1000.0f) rs = 1000.0f;
+    /* Convert Resistance to PPM using datasheet power curve */
+    float ratio = rs / R0;
+    float ppm = 99.042f * powf(ratio, -1.518f);
 
-    (void)temperature; (void)humidity;  /* suppress unused warnings */
-    return rs;
+    if (ppm < 0.0f)    ppm = 0.0f;
+    if (ppm > 1000.0f) ppm = 1000.0f;
+
+    return ppm;
 }
 
 static float mq135_read_ppm(uint16_t raw_adc, float temperature, float humidity)
@@ -431,16 +433,23 @@ static float mq135_read_ppm(uint16_t raw_adc, float temperature, float humidity)
     const float V_SUPPLY = 5.0f;
     const float R_LOAD   = 10.0f;
 
+    /* YOUR NEW CALIBRATED BASELINE */
+    const float R0       = 5.847f;
+
     float vout = ((float)raw_adc / V_MAX) * V_ADC_FS;
     if (vout < 0.01f) vout = 0.01f;
     if (vout > V_SUPPLY - 0.01f) vout = V_SUPPLY - 0.01f;
+
     float rs = R_LOAD * (V_SUPPLY - vout) / vout;
 
-    if (rs < 0.0f)    rs = 0.0f;
-    if (rs > 500.0f)  rs = 500.0f;
+    /* Convert Resistance to PPM using datasheet power curve */
+    float ratio = rs / R0;
+    float ppm = 116.6f * powf(ratio, -2.769f);
 
-    (void)temperature; (void)humidity;
-    return rs;
+    if (ppm < 0.0f)   ppm = 0.0f;
+    if (ppm > 500.0f) ppm = 500.0f;
+
+    return ppm;
 }
 
 /* Legacy wrapper — kept so existing call sites compile without change */
@@ -597,6 +606,7 @@ static void transmit_frame(float co, float nox, float temp, float hum,
  *  Vibration is polled every 1s during settle so engine-on events are not
  *  missed during the blocking delay windows.
  * ═══════════════════════════════════════════════════════════════════════════ */
+/* Temporary Calibration Loop */
 static void run_state_machine(void)
 {
     /* ── PURGE: fan ON for PURGE_MS ── */
@@ -604,19 +614,23 @@ static void run_state_machine(void)
     HAL_Delay(PURGE_MS);
 
     /* ── SETTLE: fan OFF, poll vibration every 1 s ── */
-    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
+    /* ── SETTLE: fan OFF, poll vibration continuously at 100 Hz ── */
+  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
 
-    int is_running    = 0;
-    int vib_count     = 0;
-    uint32_t settle_ticks = SETTLE_MS / 1000U;
-    for (uint32_t i = 0; i < settle_ticks; i++) {
-        HAL_Delay(1000);
-        if (mpu6050_is_running()) {
-            vib_count++;
-        }
+  int is_running = 0;
+  int vib_count  = 0;
+  uint32_t settle_start = HAL_GetTick();
+
+  /* Loop rapidly for exactly SETTLE_MS (10 seconds) */
+  while ((HAL_GetTick() - settle_start) < SETTLE_MS) {
+    if (mpu6050_is_running()) {
+      vib_count++;
     }
-    /* Report engine running if vibration detected in at least 1 of the polls */
-    if (vib_count >= 1) is_running = 1;
+    HAL_Delay(10); /* Check every 10ms, not every 1000ms */
+  }
+
+  /* Require a few consecutive vibration hits to filter out single-tap noise */
+  if (vib_count >= 3) is_running = 1;
 
     /* ── SAMPLE: read all sensors at end of settle phase ── */
     float temperature = 25.0f;
