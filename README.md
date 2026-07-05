@@ -265,7 +265,7 @@ npm run simulate
 
 The production dashboard is a **single-file, zero-build HTML app** deployed on Vercel.
 
-**URL:** `vercel-dashboard/index.html`
+**URL:** `https://vehicle-emission-monitor-embedded.vercel.app/`
 
 ### Features
 
