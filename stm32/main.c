@@ -102,19 +102,25 @@ static int16_t mpu_baseline_ay = 0;
 static int16_t mpu_baseline_az = 0;
 
 /* ── MQ-7 dynamic baseline calibration ───────────────────────────────────────
- * Per the MQ-7 datasheet, R0 is defined as the sensor resistance at 100 ppm CO,
- * NOT the clean-air resistance.  In clean air (continuous 5V mode) the sensor
- * reads Rs = R0 × 9.83, so the measured clean-air Rs must be divided by this
- * ratio to obtain the true R0.
+ * Per the MQ-7 datasheet, R0 is defined as the sensor resistance at 100 ppm CO.
+ * In clean air the ratio Rs/R0 = 27.0 (datasheet figure for the MQ-7 in clean
+ * air at 5 V / 1.4 V heating cycle).  calibrate_mq7_baseline() measures Rs in
+ * clean air, divides by 27.0 to obtain the true R0, and stores it in MQ7_R0.
  *
- * MQ7_R0 is set at startup by calibrate_mq7_baseline() and falls back to
- * 1.5 kΩ if calibration fails (sensor disconnected / saturated).
+ * mq7_read_ppm() additionally applies slow upward-drift adaptation to compensate
+ * for thermal baseline creep during extended operation.
+ *
+ * MQ7_R0 falls back to 1.5 kΩ if calibration fails (sensor disconnected /
+ * saturated or fewer than 1 valid ADC sample obtained).
  */
-#define MQ7_CLEAN_AIR_RATIO  9.83f   /* Rs/R0 in clean air — continuous 5V mode */
 
-static float MQ7_R0            = 1.5f;   /* R0 @ 100 ppm CO (kΩ) — set by calibration */
-static const float MQ7_RL      = 10.0f;  /* load resistor (kΩ) */
-static const float MQ7_V_SUPPLY = 3.3f;  /* ADC reference / sensor Vcc (V) */
+/* MQ-7 Datasheet Constants */
+#define MQ7_CLEAN_AIR_RATIO  27.0f   /* Datasheet ratio Rs/R0 in clean air */
+#define MQ7_RL               10.0f   /* Load resistor on PCB (10 kOhm) */
+#define MQ7_V_SUPPLY         3.3f    /* ADC Reference Voltage */
+
+/* Global Calibration Variable (R0 @ 100 ppm CO) */
+float MQ7_R0 = 1.5f;
 
 /* ═══════════════════════════════════════════════════════════════════════════
  *  Forward declarations
@@ -403,91 +409,101 @@ static uint16_t adc_read_channel(uint32_t channel)
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
- *  MQ-7 CO sensor — corrected R0 calibration + EMA-smoothed PPM
+ *  MQ-7 CO sensor — datasheet-correct R0 calibration + EMA-smoothed PPM
  *
  *  Datasheet clarification:
  *    R0 is defined as the sensor resistance AT 100 ppm CO, not in clean air.
- *    In clean air (continuous 5V mode) the ratio Rs/R0 = 9.83, so:
- *        R0 = Rs_clean_air / MQ7_CLEAN_AIR_RATIO
- *    calibrate_mq7_baseline() measures Rs_clean, divides by 9.83, and stores
- *    the result as MQ7_R0 — the value that makes the power-law curve correct.
+ *    In clean air the ratio Rs/R0 = 27.0 (MQ7_CLEAN_AIR_RATIO), so:
+ *        R0 = Rs_clean_air / 27.0
+ *    calibrate_mq7_baseline() measures Rs over 50 samples (~5 s), filters out
+ *    rail-clamped readings, divides the average by 27.0, and stores the result
+ *    as MQ7_R0.
  *
  *  mq7_read_ppm():
- *    Converts a raw 12-bit ADC value to CO ppm using the power-law curve:
- *        ppm = 99.042 × (Rs / R0)^−1.518
- *    An Exponential Moving Average (α = 0.1) suppresses thermal jitter.
- *    In clean air the ratio Rs/R0 ≈ 9.83 → ~10 ppm, which the dashboard
- *    deadband filter already clamps to 0 for a stable display.
+ *    Converts a raw 12-bit ADC value to CO ppm using the verified power-law:
+ *        ppm = 100 × (Rs / R0)^−1.518
+ *    Includes slow upward-drift adaptation (thermal baseline tracking) and an
+ *    Exponential Moving Average (α = 0.1) to suppress thermal jitter.
  *
  *  Circuit assumptions:
- *    • MQ-7 VCC = 3.3 V (same as STM32 ADC reference)
+ *    • MQ-7 VCC = 3.3 V (same as STM32 ADC reference — MQ7_V_SUPPLY)
  *    • Load resistor RL = 10 kΩ (MQ7_RL)
- *    • ADC reads voltage across RL
+ *    • ADC reads voltage across RL (PA0 → ADC_CHANNEL_0)
  * ═══════════════════════════════════════════════════════════════════════════ */
 
 /**
- * Establish the MQ-7 R0 baseline (resistance at 100 ppm CO).
- * Samples clean-air Rs over ~5 s, then divides by MQ7_CLEAN_AIR_RATIO (9.83)
- * to obtain the datasheet-correct R0.
+ * @brief Boot-time Clean Air Baseline Calibration
+ *
+ * Samples clean-air Rs over ~5 s (50 × 100 ms), filters out saturated/open
+ * readings, then divides by MQ7_CLEAN_AIR_RATIO (27.0) to obtain the
+ * datasheet-correct R0 at 100 ppm CO.
  */
 static void calibrate_mq7_baseline(void)
 {
-    printf("Calibrating MQ-7. Ensure sensor is in clean air...\n");
-    float rs_sum = 0.0f;
-    int   valid  = 0;
+    printf("Calibrating MQ7 baseline in clean air...\n");
+    float    rs_sum       = 0.0f;
+    uint16_t valid_samples = 0;
 
     for (int i = 0; i < 50; i++) {
         uint32_t raw_adc = adc_read_channel(ADC_CHANNEL_0);
         float voltage = ((float)raw_adc / 4095.0f) * MQ7_V_SUPPLY;
-        if (voltage > 0.01f) {
-            float rs  = MQ7_RL * (MQ7_V_SUPPLY - voltage) / voltage;
-            rs_sum   += rs;
-            valid++;
+        if (voltage > 0.05f && voltage < (MQ7_V_SUPPLY - 0.05f)) {
+            float rs   = MQ7_RL * (MQ7_V_SUPPLY - voltage) / voltage;
+            rs_sum    += rs;
+            valid_samples++;
         }
-        HAL_Delay(100);   /* 100 ms × 50 = 5 seconds */
+        HAL_Delay(100); /* 50 samples * 100 ms = 5 seconds */
     }
 
-    if (valid > 0) {
-        float rs_clean_air = rs_sum / (float)valid;
-
-        /* Divide clean-air Rs by the clean-air ratio to get true R0 @ 100 ppm */
+    if (valid_samples > 0) {
+        float rs_clean_air = rs_sum / (float)valid_samples;
+        /* Correct MQ-7 R0 formula: R0 = Rs_clean / 27.0 */
         MQ7_R0 = rs_clean_air / MQ7_CLEAN_AIR_RATIO;
-
-        /* Safety clamp — implausible result means sensor is absent/saturated */
-        if (MQ7_R0 <= 0.1f) MQ7_R0 = 1.5f;
-
-        printf("MQ-7 calibration complete. Rs_clean = %.2f kOhm -> R0 = %.2f kOhm\n",
+        if (MQ7_R0 < 0.1f) MQ7_R0 = 1.5f; /* Fallback guard for disconnected sensor */
+        printf("MQ7 Calibration Done: Rs_clean = %.2f kOhm -> R0 = %.2f kOhm\n",
                rs_clean_air, MQ7_R0);
-    } else {
-        printf("MQ-7 calibration failed (no valid ADC readings). Using R0 = %.2f kOhm\n",
-               MQ7_R0);
     }
 }
 
 /**
- * Read CO concentration in ppm from the MQ-7 sensor.
- * Applies an EMA (α = 0.1) to suppress thermal jitter.
+ * @brief Reads MQ-7 ADC and converts to smoothed PPM with Auto-Baseline Tracking
+ *
+ * Applies thermal drift compensation (slow upward R0 adaptation) and an
+ * Exponential Moving Average (α = 0.1) to suppress thermal jitter.
  */
 static float mq7_read_ppm(uint16_t raw_adc)
 {
-    static float smoothed_ppm = 0.0f;   /* EMA state — persists across calls */
+    static float smoothed_ppm = 0.0f;
 
     float voltage = ((float)raw_adc / 4095.0f) * MQ7_V_SUPPLY;
 
-    if (voltage <= 0.01f) return smoothed_ppm;   /* sensor open / shorted */
+    if (voltage <= 0.01f || voltage >= (MQ7_V_SUPPLY - 0.01f)) {
+        return 0.0f; /* Sensor fault / disconnected */
+    }
 
-    if (voltage > MQ7_V_SUPPLY - 0.01f) voltage = MQ7_V_SUPPLY - 0.01f;
+    /* Calculate current sensor resistance Rs */
+    float rs = MQ7_RL * (MQ7_V_SUPPLY - voltage) / voltage;
 
-    float rs    = MQ7_RL * (MQ7_V_SUPPLY - voltage) / voltage;
-    float ratio = rs / MQ7_R0;   /* ≈ 9.83 in clean air — correct by design */
+    /* --- THERMAL DRIFT / AUTO-BASELINE TRACKING ---
+     * If the sensor continues to warm up and Rs increases (cleaner air state),
+     * dynamically update R0 to prevent ambient PPM creep. */
+    float current_r0 = rs / MQ7_CLEAN_AIR_RATIO;
+    if (current_r0 > MQ7_R0) {
+        MQ7_R0 = (0.99f * MQ7_R0) + (0.01f * current_r0); /* Slow upward drift adaptation */
+    }
 
-    /* MQ-7 power-law curve: ppm = 99.042 × (Rs/R0)^−1.518 */
-    float raw_ppm = 99.042f * powf(ratio, -1.518f);
+    /* Calculate Rs/R0 ratio */
+    float ratio = rs / MQ7_R0;
+    if (ratio < 0.01f) ratio = 0.01f;
 
-    if (raw_ppm < 0.0f)    raw_ppm = 0.0f;
+    /* Verified MQ-7 Power Law: PPM = 100 * (Rs/R0)^(-1.518) */
+    float raw_ppm = 100.0f * powf(ratio, -1.518f);
+
+    /* Safety Clamping */
     if (raw_ppm > 2000.0f) raw_ppm = 2000.0f;
+    if (raw_ppm < 0.0f)    raw_ppm = 0.0f;
 
-    /* Exponential Moving Average: α = 0.1 → smooth, lag-tolerant output */
+    /* Exponential Moving Average (EMA) Filter (Alpha = 0.1) */
     smoothed_ppm = (0.1f * raw_ppm) + (0.9f * smoothed_ppm);
 
     return smoothed_ppm;

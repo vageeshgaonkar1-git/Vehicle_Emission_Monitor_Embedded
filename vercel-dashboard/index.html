@@ -623,34 +623,61 @@ function clearAlarmLog() {
 async function loadHistory() {
   const tbody = document.getElementById('hist-tbody');
   tbody.innerHTML = '<tr><td colspan="8" class="px-3 py-6 text-center text-slate-500">Loading…</td></tr>';
+  
   try {
+    // Fetch last 100 historical snapshots
     const snap = await db.ref('/history').orderByChild('idx').limitToLast(100).once('value');
     const rows = [];
     snap.forEach(child => rows.unshift(child.val()));
+
     if (!rows.length) {
       tbody.innerHTML = '<tr><td colspan="8" class="px-3 py-6 text-center text-slate-600 italic">No records yet</td></tr>';
       return;
     }
+
+    // Safety fallbacks for regulatory limits
+    const coLimit  = activeProfile?.coLimit  ?? 300;
+    const noxLimit = activeProfile?.noxLimit ?? 150;
+
     tbody.innerHTML = rows.map(r => {
-      const coBand  = bandLabel(+r.co,  activeProfile.coLimit);
-      const noxBand = bandLabel(+r.nox, activeProfile.noxLimit);
-      const worst   = [coBand, noxBand].includes('FAILURE') ? 'FAILURE'
-                    : [coBand, noxBand].includes('DEGRADED') ? 'DEGRADED' : 'OPTIMAL';
+      // 1. Safe parsing with default 0 fallback
+      const rawCo   = Number(r.co)  || 0;
+      const rawNox  = Number(r.nox) || 0;
+      const temp    = Number(r.temp)|| 0;
+      const hum     = Number(r.hum) || 0;
+
+      // 2. Deadband Filter (Matches Live UI Dashboard)
+      const displayCo  = rawCo  < 15 ? 0.0 : rawCo;
+      const displayNox = rawNox < 10 ? 0.0 : rawNox;
+
+      // 3. Health Matrix Band Logic
+      const coBand  = typeof bandLabel === 'function' ? bandLabel(displayCo, coLimit)  : 'OPTIMAL';
+      const noxBand = typeof bandLabel === 'function' ? bandLabel(displayNox, noxLimit): 'OPTIMAL';
+      
+      const worst = [coBand, noxBand].includes('FAILURE')  ? 'FAILURE'
+                  : [coBand, noxBand].includes('DEGRADED') ? 'DEGRADED' 
+                  : 'OPTIMAL';
+
       const bandCls = worst === 'FAILURE'  ? 'bg-red-500/15 text-red-400'
                     : worst === 'DEGRADED' ? 'bg-yellow-400/15 text-yellow-300'
                     : 'bg-emerald-500/15 text-emerald-400';
+                    
       const bandIcon = worst === 'FAILURE' ? '🔴' : worst === 'DEGRADED' ? '🟡' : '🟢';
+
+      // 4. Flexible Engine Running Check (handles boolean true/false or int 1/0)
+      const isRunning = r.is_running === 1 || r.is_running === true || r.engine_status === true;
+
       return `
       <tr class="hover:bg-zinc-700/30 transition-colors">
         <td class="px-3 py-2 text-slate-500">${r.idx ?? ''}</td>
-        <td class="px-3 py-2 font-mono text-slate-400 text-xs whitespace-nowrap">${fmtDateTime(r.timestamp)}</td>
-        <td class="px-3 py-2 text-right text-blue-400">${(+r.co).toFixed(2)}</td>
-        <td class="px-3 py-2 text-right text-purple-400">${(+r.nox).toFixed(2)}</td>
-        <td class="px-3 py-2 text-right text-amber-400">${(+r.temp).toFixed(1)}</td>
-        <td class="px-3 py-2 text-right text-cyan-400">${(+r.hum).toFixed(1)}</td>
+        <td class="px-3 py-2 font-mono text-slate-400 text-xs whitespace-nowrap">${typeof fmtDateTime === 'function' ? fmtDateTime(r.timestamp) : (r.timestamp || '--')}</td>
+        <td class="px-3 py-2 text-right text-blue-400 font-semibold">${displayCo.toFixed(2)}</td>
+        <td class="px-3 py-2 text-right text-purple-400 font-semibold">${displayNox.toFixed(2)}</td>
+        <td class="px-3 py-2 text-right text-amber-400">${temp.toFixed(1)}</td>
+        <td class="px-3 py-2 text-right text-cyan-400">${hum.toFixed(1)}</td>
         <td class="px-3 py-2 text-center">
-          <span class="px-2 py-0.5 rounded-full text-xs font-semibold ${r.is_running===1?'bg-emerald-500/15 text-emerald-400':'bg-zinc-700 text-slate-500'}">
-            ${r.is_running===1?'Running':'Stopped'}
+          <span class="px-2 py-0.5 rounded-full text-xs font-semibold ${isRunning ? 'bg-emerald-500/15 text-emerald-400' : 'bg-zinc-700 text-slate-500'}">
+            ${isRunning ? 'Running' : 'Stopped'}
           </span>
         </td>
         <td class="px-3 py-2 text-center">
@@ -660,8 +687,10 @@ async function loadHistory() {
         </td>
       </tr>`;
     }).join('');
+
   } catch(e) {
-    tbody.innerHTML = `<tr><td colspan="8" class="px-3 py-6 text-center text-red-400">Error: ${e.message}</td></tr>`;
+    console.error("Error loading history:", e);
+    tbody.innerHTML = `<tr><td colspan="8" class="px-3 py-6 text-center text-red-400">Error loading history: ${e.message}</td></tr>`;
   }
 }
 
