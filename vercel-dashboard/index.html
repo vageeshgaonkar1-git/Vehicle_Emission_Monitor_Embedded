@@ -714,19 +714,26 @@ db.ref('/latest').on('value', snap => {
   const timeStr = fmtTime(data.timestamp);
   document.getElementById('header-ts').textContent = `Last: ${timeStr}`;
 
-  document.getElementById('co-val').textContent   = (+data.co).toFixed(2);
-  document.getElementById('nox-val').textContent  = (+data.nox).toFixed(2);
+  // DEADBAND FILTER: clamp sensor noise floor to 0 for a stable clean-air UI
+  const displayCO  = (+data.co)  < 15 ? 0 : +data.co;   // ignore CO noise below 15 ppm
+  const displayNOx = (+data.nox) < 10 ? 0 : +data.nox;  // ignore NOx noise below 10 ppm
+
+  document.getElementById('co-val').textContent   = displayCO.toFixed(2);
+  document.getElementById('nox-val').textContent  = displayNOx.toFixed(2);
   document.getElementById('temp-val').textContent = (+data.temp).toFixed(1);
   document.getElementById('hum-val').textContent  = (+data.hum).toFixed(1);
 
   setBadge('badge-engine', data.is_running === 1, 'Engine: Running', 'Engine: Stopped');
 
-  pushToChart(gasChart, timeStr, [+data.co, +data.nox]);
+  // Push filtered values to charts
+  pushToChart(gasChart, timeStr, [displayCO, displayNOx]);
   pushToChart(envChart, timeStr, [+data.temp, +data.hum]);
 
+  // Store raw values in session buffer so CSV export reflects real sensor data
   sessionData.push({ timestamp:data.timestamp, co:data.co, nox:data.nox, temp:data.temp, hum:data.hum, is_running:data.is_running });
 
-  updateDiagnostics(+data.co, +data.nox);
+  // Diagnostics and alerts use filtered display values for visual consistency
+  updateDiagnostics(displayCO, displayNOx);
   evaluateAlerts(data);
 }, err => {
   console.error('Firebase error:', err);

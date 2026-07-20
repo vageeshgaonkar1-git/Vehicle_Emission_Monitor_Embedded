@@ -101,6 +101,15 @@ static int16_t mpu_baseline_ax = 0;
 static int16_t mpu_baseline_ay = 0;
 static int16_t mpu_baseline_az = 0;
 
+/* ── MQ-7 dynamic baseline calibration ───────────────────────────────────────
+ * MQ7_R0 is measured at startup in clean air by calibrate_mq7_baseline().
+ * A hard-coded fallback of 10.0 kΩ is used if calibration is skipped.
+ * RL and V_SUPPLY must match the physical circuit.
+ */
+static float MQ7_R0    = 10.0f;  /* sensor resistance in clean air (kΩ) — set by calibration */
+static const float MQ7_RL       = 10.0f;  /* load resistor (kΩ) */
+static const float MQ7_V_SUPPLY = 3.3f;   /* ADC reference / sensor Vcc (V) */
+
 /* ═══════════════════════════════════════════════════════════════════════════
  *  Forward declarations
  * ═══════════════════════════════════════════════════════════════════════════ */
@@ -120,6 +129,7 @@ static HAL_StatusTypeDef dht22_read(float *temperature, float *humidity);
 static uint16_t adc_read_channel(uint32_t channel);
 static void     mpu6050_calibrate(void);
 static int      mpu6050_is_running(void);
+static void     calibrate_mq7_baseline(void);
 static HAL_StatusTypeDef ds3231_get_timestamp(char *buf, size_t len);
 
 float dht22_correct_gas(uint16_t raw_adc, float temperature, float humidity);
@@ -157,6 +167,10 @@ int main(void)
      * The board must be stationary (engine off) at this point.
      * This eliminates false "engine running" readings caused by gravity. */
     mpu6050_calibrate();
+
+    /* Sample clean air to establish the MQ-7 R0 baseline.
+     * Keep sensor in clean air during the first ~5 seconds after boot. */
+    calibrate_mq7_baseline();
 
     HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
 
@@ -383,41 +397,68 @@ static uint16_t adc_read_channel(uint32_t channel)
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
- *  MQ-7 CO sensor — calibrated concentration in ppm
+ *  MQ-7 CO sensor — auto-calibration + calibrated PPM
  *
- *  MQ-7 datasheet characteristics (Vcc=5V, RL=10kΩ, 20°C, 65% RH):
- *    Rs/R0 in clean air   ≈ 1.0  (after calibration R0 = Rs_clean)
- *    Rs/R0 at 100 ppm CO  ≈ 0.38
- *    Rs/R0 at 200 ppm CO  ≈ 0.25
- *  Power curve: ppm = a * (Rs/R0)^b
- *    a = 99.042, b = -1.518  (from datasheet curve fit)
+ *  calibrate_mq7_baseline():
+ *    Samples the sensor 50 times over ~5 seconds at boot (clean air).
+ *    Computes average Rs and stores it as MQ7_R0.  Call once in main()
+ *    before the while(1) loop, with the sensor in uncontaminated air.
  *
- *  NOTE: MQ-7 VCC must be 5V for correct operation.
- *  The STM32 ADC reads the voltage across RL (10kΩ) referenced to 3.3V.
- *  If the sensor is powered at 5V but ADC max is 3.3V, use a voltage divider
- *  on the output pin, OR accept that readings are approximate.
+ *  mq7_read_ppm():
+ *    Converts a raw 12-bit ADC value to CO concentration using the
+ *    MQ-7 power-law curve:
+ *        ppm = 99.042 × (Rs / R0)^−1.518
+ *    where Rs is the sensor resistance calculated from the ADC reading
+ *    and R0 is the clean-air baseline set by calibrate_mq7_baseline().
  *
- *  R0 (sensor resistance in clean air) must be measured during calibration.
- *  Default R0 = 10 kΩ — adjust after warm-up measurement.
+ *  Circuit assumptions:
+ *    • MQ-7 VCC = 3.3 V (same as STM32 ADC reference)
+ *    • Load resistor RL = 10 kΩ (MQ7_RL)
+ *    • ADC reads voltage across RL (Vout = Vsupply × RL / (Rs + RL))
  * ═══════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * Establish the clean-air R0 baseline for the MQ-7 sensor.
+ * Takes 50 samples at 100 ms intervals (5 seconds total).
+ * The sensor must be in clean, uncontaminated air during this window.
+ */
+static void calibrate_mq7_baseline(void)
+{
+    printf("Calibrating MQ-7. Keep in clean air...\n");
+    float rs_sum = 0.0f;
+    int   valid  = 0;
+
+    for (int i = 0; i < 50; i++) {
+        uint32_t raw_adc = adc_read_channel(ADC_CHANNEL_0);
+        float voltage = ((float)raw_adc / 4095.0f) * MQ7_V_SUPPLY;
+        if (voltage > 0.01f) {          /* guard against divide-by-zero */
+            float rs  = MQ7_RL * (MQ7_V_SUPPLY - voltage) / voltage;
+            rs_sum   += rs;
+            valid++;
+        }
+        HAL_Delay(100);                 /* 100 ms × 50 = 5 seconds */
+    }
+
+    if (valid > 0) {
+        MQ7_R0 = rs_sum / (float)valid;
+    }
+    /* If every sample was invalid (sensor not connected), MQ7_R0 keeps
+     * its default fallback value of 10.0 kΩ. */
+    printf("MQ-7 calibration complete. R0 = %.2f kOhm\n", MQ7_R0);
+}
+
 static float mq7_read_ppm(uint16_t raw_adc, float temperature, float humidity)
 {
-    const float V_ADC_FS = 3.3f;
-    const float V_MAX    = 4095.0f;
-    const float V_SUPPLY = 5.0f;
-    const float R_LOAD   = 10.0f;
+    float voltage = ((float)raw_adc / 4095.0f) * MQ7_V_SUPPLY;
 
-    /* YOUR NEW CALIBRATED BASELINE */
-    const float R0       = 1.515f;
+    /* Clamp to avoid divide-by-zero at the extremes */
+    if (voltage < 0.01f)                voltage = 0.01f;
+    if (voltage > MQ7_V_SUPPLY - 0.01f) voltage = MQ7_V_SUPPLY - 0.01f;
 
-    float vout = ((float)raw_adc / V_MAX) * V_ADC_FS;
-    if (vout < 0.01f) vout = 0.01f;
-    if (vout > V_SUPPLY - 0.01f) vout = V_SUPPLY - 0.01f;
+    float rs    = MQ7_RL * (MQ7_V_SUPPLY - voltage) / voltage;
+    float ratio = rs / MQ7_R0;
 
-    float rs = R_LOAD * (V_SUPPLY - vout) / vout;
-
-    /* Convert Resistance to PPM using datasheet power curve */
-    float ratio = rs / R0;
+    /* MQ-7 power-law curve: ppm = 99.042 × (Rs/R0)^−1.518 */
     float ppm = 99.042f * powf(ratio, -1.518f);
 
     if (ppm < 0.0f)    ppm = 0.0f;
