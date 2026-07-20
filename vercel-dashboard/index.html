@@ -216,33 +216,38 @@
   </section>
 
   <!-- HISTORY TAB -->
-  <section id="tab-history" class="hidden space-y-6">
-    <div class="bg-zinc-800 rounded-2xl border border-zinc-700 p-6">
-      <div class="flex flex-wrap items-center justify-between gap-4 mb-5">
-        <h2 class="font-semibold text-slate-200">Emission Log — Firebase Records</h2>
-        <button onclick="loadHistory()" class="bg-teal-700 hover:bg-teal-600 text-white text-sm font-medium px-4 py-1.5 rounded-lg">Refresh</button>
-      </div>
-      <div class="overflow-x-auto rounded-xl">
-        <table class="w-full text-xs text-slate-300 border-collapse">
-          <thead>
-            <tr class="bg-zinc-700/60 text-slate-400 uppercase tracking-wider">
-              <th class="px-3 py-2.5 text-left">#</th>
-              <th class="px-3 py-2.5 text-left">Timestamp</th>
-              <th class="px-3 py-2.5 text-right">CO</th>
-              <th class="px-3 py-2.5 text-right">NOx</th>
-              <th class="px-3 py-2.5 text-right">Temp</th>
-              <th class="px-3 py-2.5 text-right">Hum</th>
-              <th class="px-3 py-2.5 text-center">Engine</th>
-              <th class="px-3 py-2.5 text-center">Band</th>
-            </tr>
-          </thead>
-          <tbody id="hist-tbody">
-            <tr><td colspan="8" class="px-3 py-6 text-center text-slate-600 italic">Click "Refresh" to load</td></tr>
-          </tbody>
-        </table>
-      </div>
+<!-- HISTORY TAB -->
+<section id="tab-history" class="hidden space-y-6">
+  <div class="bg-zinc-800 rounded-2xl border border-zinc-700 p-6">
+    <div class="flex flex-wrap items-center justify-between gap-4 mb-5">
+      <h2 class="font-semibold text-slate-200">Emission Log — Firebase Records (Last 15)</h2>
+      <button onclick="loadHistory()" class="bg-teal-700 hover:bg-teal-600 text-white text-sm font-medium px-4 py-1.5 rounded-lg transition-colors">
+        🔄 Refresh
+      </button>
     </div>
-  </section>
+    <!-- Added max-h-[520px] and log-scroll class for clean 15-row display -->
+    <div class="overflow-x-auto max-h-[520px] overflow-y-auto rounded-xl log-scroll">
+      <table class="w-full text-xs text-slate-300 border-collapse">
+        <thead class="sticky top-0 bg-zinc-800 z-10">
+          <tr class="bg-zinc-700/80 text-slate-400 uppercase tracking-wider">
+            <th class="px-3 py-2.5 text-left">#</th>
+            <th class="px-3 py-2.5 text-left">Timestamp</th>
+            <th class="px-3 py-2.5 text-right">CO</th>
+            <th class="px-3 py-2.5 text-right">NOx</th>
+            <th class="px-3 py-2.5 text-right">Temp</th>
+            <th class="px-3 py-2.5 text-right">Hum</th>
+            <th class="px-3 py-2.5 text-center">Engine</th>
+            <th class="px-3 py-2.5 text-center">Band</th>
+          </tr>
+        </thead>
+        <tbody id="hist-tbody">
+          <tr><td colspan="8" class="px-3 py-6 text-center text-slate-600 italic">Click "Refresh" to load</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
   <!-- SETTINGS TAB -->
   <section id="tab-settings" class="hidden space-y-6">
 
@@ -620,37 +625,50 @@ function clearAlarmLog() {
   document.getElementById('alarm-log').innerHTML = '<p class="text-slate-600 italic">No alarms recorded yet.</p>';
 }
 // ── History from Firebase ─────────────────────────────────────────────────────
+// ── History from Firebase ─────────────────────────────────────────────────────
 async function loadHistory() {
   const tbody = document.getElementById('hist-tbody');
-  tbody.innerHTML = '<tr><td colspan="8" class="px-3 py-6 text-center text-slate-500">Loading…</td></tr>';
+  tbody.innerHTML = '<tr><td colspan="8" class="px-3 py-6 text-center text-slate-500">Loading history…</td></tr>';
   
   try {
-    // Fetch last 100 historical snapshots
-    const snap = await db.ref('/history').orderByChild('idx').limitToLast(100).once('value');
+    let snap;
+    // Primary query: Fetch last 15 records sorted by 'idx'
+    try {
+      snap = await db.ref('/history').orderByChild('idx').limitToLast(15).once('value');
+    } catch (e) {
+      // Fallback query if idx index is missing
+      console.warn("Falling back to standard key query:", e);
+      snap = await db.ref('/history').limitToLast(15).once('value');
+    }
+
     const rows = [];
-    snap.forEach(child => rows.unshift(child.val()));
+    snap.forEach(child => {
+      const val = child.val();
+      if (val && typeof val === 'object') {
+        rows.unshift(val); // Put newest logs at top
+      }
+    });
 
     if (!rows.length) {
-      tbody.innerHTML = '<tr><td colspan="8" class="px-3 py-6 text-center text-slate-600 italic">No records yet</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="8" class="px-3 py-6 text-center text-slate-600 italic">No records found in database</td></tr>';
       return;
     }
 
-    // Safety fallbacks for regulatory limits
+    // Diagnostic limits
     const coLimit  = activeProfile?.coLimit  ?? 300;
     const noxLimit = activeProfile?.noxLimit ?? 150;
 
     tbody.innerHTML = rows.map(r => {
-      // 1. Safe parsing with default 0 fallback
       const rawCo   = Number(r.co)  || 0;
       const rawNox  = Number(r.nox) || 0;
       const temp    = Number(r.temp)|| 0;
       const hum     = Number(r.hum) || 0;
 
-      // 2. Deadband Filter (Matches Live UI Dashboard)
+      // Deadband Filter (Matches Live UI)
       const displayCo  = rawCo  < 15 ? 0.0 : rawCo;
       const displayNox = rawNox < 10 ? 0.0 : rawNox;
 
-      // 3. Health Matrix Band Logic
+      // Diagnostic Band Matrix
       const coBand  = typeof bandLabel === 'function' ? bandLabel(displayCo, coLimit)  : 'OPTIMAL';
       const noxBand = typeof bandLabel === 'function' ? bandLabel(displayNox, noxLimit): 'OPTIMAL';
       
@@ -664,17 +682,17 @@ async function loadHistory() {
                     
       const bandIcon = worst === 'FAILURE' ? '🔴' : worst === 'DEGRADED' ? '🟡' : '🟢';
 
-      // 4. Flexible Engine Running Check (handles boolean true/false or int 1/0)
+      // Engine Running status check
       const isRunning = r.is_running === 1 || r.is_running === true || r.engine_status === true;
 
       return `
-      <tr class="hover:bg-zinc-700/30 transition-colors">
-        <td class="px-3 py-2 text-slate-500">${r.idx ?? ''}</td>
+      <tr class="hover:bg-zinc-700/30 transition-colors border-b border-zinc-700/30">
+        <td class="px-3 py-2 text-slate-500 font-mono">${r.idx ?? '--'}</td>
         <td class="px-3 py-2 font-mono text-slate-400 text-xs whitespace-nowrap">${typeof fmtDateTime === 'function' ? fmtDateTime(r.timestamp) : (r.timestamp || '--')}</td>
-        <td class="px-3 py-2 text-right text-blue-400 font-semibold">${displayCo.toFixed(2)}</td>
-        <td class="px-3 py-2 text-right text-purple-400 font-semibold">${displayNox.toFixed(2)}</td>
-        <td class="px-3 py-2 text-right text-amber-400">${temp.toFixed(1)}</td>
-        <td class="px-3 py-2 text-right text-cyan-400">${hum.toFixed(1)}</td>
+        <td class="px-3 py-2 text-right text-blue-400 font-semibold font-mono">${displayCo.toFixed(2)}</td>
+        <td class="px-3 py-2 text-right text-purple-400 font-semibold font-mono">${displayNox.toFixed(2)}</td>
+        <td class="px-3 py-2 text-right text-amber-400 font-mono">${temp.toFixed(1)}</td>
+        <td class="px-3 py-2 text-right text-cyan-400 font-mono">${hum.toFixed(1)}</td>
         <td class="px-3 py-2 text-center">
           <span class="px-2 py-0.5 rounded-full text-xs font-semibold ${isRunning ? 'bg-emerald-500/15 text-emerald-400' : 'bg-zinc-700 text-slate-500'}">
             ${isRunning ? 'Running' : 'Stopped'}
@@ -690,7 +708,7 @@ async function loadHistory() {
 
   } catch(e) {
     console.error("Error loading history:", e);
-    tbody.innerHTML = `<tr><td colspan="8" class="px-3 py-6 text-center text-red-400">Error loading history: ${e.message}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" class="px-3 py-6 text-center text-red-400">Error: ${e.message}</td></tr>`;
   }
 }
 
